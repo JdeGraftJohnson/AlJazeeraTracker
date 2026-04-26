@@ -13,7 +13,8 @@ from pathlib import Path
 
 import requests
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
+await Stealth().apply_stealth_async(page)
 
 LIVEBLOG_INDEX = "https://www.aljazeera.com/news/liveblog/"
 LAST_SEEN_FILE = Path("last_seen.txt")
