@@ -110,6 +110,18 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         await page.goto(url, wait_until="networkidle", timeout=45_000)
         await page.wait_for_timeout(3_000)
 
+        # Dismiss cookie consent banner if present
+        for btn_text in ["Reject all", "Accept all", "Allow all"]:
+            try:
+                btn = await page.query_selector(f"button:has-text('{btn_text}')")
+                if btn:
+                    await btn.click()
+                    await page.wait_for_timeout(1_000)
+                    print(f"Dismissed cookie banner: {btn_text}")
+                    break
+            except Exception:
+                pass
+
         # Scroll down to trigger any lazy-loaded content
         await page.evaluate("window.scrollBy(0, 800)")
         await page.wait_for_timeout(2_000)
@@ -121,6 +133,8 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         title = await page.title()
         print(f"Page title: {title}")
 
+        # From screenshot: entries are boxed cards inside the liveblog
+        # Timestamp is a sibling above each card, heading is an h2 inside the card
         selectors = [
             "[data-type='liveblog-entry']",
             ".liveblog-entry",
@@ -129,12 +143,19 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
             "[class*='liveblog']",
             "[class*='live-blog']",
             "[class*='LiveBlog']",
+            # broad fallback — any article-like card in the main content area
+            "main article",
+            "article",
         ]
         entries = []
         for sel in selectors:
             entries = await page.query_selector_all(sel)
             if entries:
                 print(f"Selector matched: {sel} ({len(entries)} entries)")
+                # Print raw HTML of first 2 entries so we can see the real structure
+                for i, e in enumerate(entries[:2]):
+                    inner = await e.inner_html()
+                    print(f"--- Entry {i+1} HTML ---\n{inner[:800]}\n")
                 break
 
         if not entries:
@@ -158,19 +179,44 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
 
         results = []
         for entry in entries[:n]:
-            time_el = await entry.query_selector("time, .date-simple, .liveblog-entry__date")
+            # Timestamp: visible as "11m ago (20:30 GMT)" — try time element
+            # and also the preceding sibling which holds the relative time
+            time_el = await entry.query_selector("time")
             timestamp = ""
             if time_el:
                 timestamp = await time_el.get_attribute("datetime") or await time_el.inner_text()
                 timestamp = timestamp.strip()
 
-            heading_el = await entry.query_selector("h2, h3, .liveblog-entry__title")
+            # If no time inside card, check the element just before it
+            if not timestamp:
+                try:
+                    timestamp = await entry.evaluate("""el => {
+                        let prev = el.previousElementSibling;
+                        while (prev) {
+                            let t = prev.querySelector('time');
+                            if (t) return t.textContent;
+                            if (prev.textContent.match(/\\d+m ago|\\d+h ago|GMT/)) return prev.textContent.trim();
+                            prev = prev.previousElementSibling;
+                        }
+                        return '';
+                    }""")
+                except Exception:
+                    pass
+
+            # Heading: h2 inside the card (visible in screenshot)
+            heading_el = await entry.query_selector("h2, h3, h4")
             heading = (await heading_el.inner_text()).strip() if heading_el else ""
 
+            # Body: first p tag inside the card
             body_el = await entry.query_selector("p")
             body = (await body_el.inner_text()).strip()[:300] if body_el else ""
 
+            # Skip entries with no useful content
+            if not heading and not body:
+                continue
+
             results.append({"timestamp": timestamp, "heading": heading, "body": body})
+            print(f"  [{timestamp}] {heading[:60]}")
 
         await browser.close()
         return url, results
