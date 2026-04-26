@@ -135,30 +135,40 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         print(f"Live blog feed items found: {len(entries)}")
 
 
-        results = []
-        for entry in entries[-n:]:
-            # Exact class names confirmed via DevTools:
-            # heading:   .card-live__content-area h2
-            # timestamp: .card-live__precontent time
-            # body:      .card-live__content p
 
+        # Parse ALL entries, attach their datetime for sorting, take 3 most recent
+        all_results = []
+        for entry in entries:
             heading_el = await entry.query_selector(".card-live__content-area h2, .card-live__content-area h3, h2, h3")
             heading = (await heading_el.inner_text()).strip() if heading_el else ""
 
-            body_el = await entry.query_selector(".card-live__content p, p")
+            # Body — use image caption or figcaption as fallback for photo-only entries
+            body_el = await entry.query_selector(".card-live__content p, p, figcaption")
             body = (await body_el.inner_text()).strip()[:300] if body_el else ""
 
             time_el = await entry.query_selector(".card-live__precontent time, time")
             timestamp = ""
+            iso_dt = ""
             if time_el:
-                timestamp = await time_el.get_attribute("datetime") or await time_el.inner_text()
+                iso_dt = await time_el.get_attribute("datetime") or ""
+                timestamp = iso_dt or await time_el.inner_text()
                 timestamp = timestamp.strip()
 
             if not heading and not body:
                 continue
 
-            results.append({"timestamp": timestamp, "heading": heading, "body": body})
-            print(f"  [{timestamp}] {heading[:70]}")
+            all_results.append({"timestamp": timestamp, "iso_dt": iso_dt, "heading": heading, "body": body})
+
+        # Sort by ISO datetime descending (newest first), fall back to DOM order
+        def sort_key(r):
+            return r["iso_dt"] if r["iso_dt"] else ""
+        all_results.sort(key=sort_key, reverse=True)
+
+        results = []
+        for r in all_results[:n]:
+            del r["iso_dt"]
+            results.append(r)
+            print(f"  [{r['timestamp']}] {r['heading'][:70]}")
 
         await browser.close()
         return url, results
