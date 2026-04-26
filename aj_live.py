@@ -122,10 +122,6 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
             except Exception:
                 pass
 
-        # Scroll down to trigger any lazy-loaded content
-        await page.evaluate("window.scrollBy(0, 800)")
-        await page.wait_for_timeout(2_000)
-
         # Save screenshot as debug artifact
         await page.screenshot(path="debug_screenshot.png", full_page=False)
         print("Screenshot saved: debug_screenshot.png")
@@ -133,48 +129,36 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         title = await page.title()
         print(f"Page title: {title}")
 
-        # [class*='liveblog'] matches 26 elements — both timestamp rows AND cards.
-        # Filter to only elements that contain an h2/h3 (the actual story cards).
-        # Timestamp lives as a sibling ABOVE each card, not inside it.
-        all_liveblog = await page.query_selector_all("[class*='liveblog']")
-        entries = [el for el in all_liveblog if await el.query_selector("h2, h3")]
-        print(f"Liveblog cards with headings: {len(entries)}")
+        # Exact selectors from DevTools inspection:
+        # li[data-testid="live-blog-feed-item"] > div.card-live
+        entries = await page.query_selector_all('li[data-testid="live-blog-feed-item"]')
+        print(f"Live blog feed items found: {len(entries)}")
 
-        if not entries:
-            html = await page.content()
-            lower = html.lower()
-            idx = lower.find("liveblog")
-            if idx != -1:
-                print(f"HTML around 'liveblog':\n{html[max(0,idx-100):idx+600]}")
 
         results = []
-        for entry in entries[:n]:
-            # Heading — h2 inside the card
-            heading_el = await entry.query_selector("h2, h3")
+        for entry in entries[-n:]:
+            # Exact class names confirmed via DevTools:
+            # heading:   .card-live__content-area h2
+            # timestamp: .card-live__precontent time
+            # body:      .card-live__content p
+
+            heading_el = await entry.query_selector(".card-live__content-area h2, .card-live__content-area h3, h2, h3")
             heading = (await heading_el.inner_text()).strip() if heading_el else ""
 
-            # Body — first <p> inside the card
-            body_el = await entry.query_selector("p")
+            body_el = await entry.query_selector(".card-live__content p, p")
             body = (await body_el.inner_text()).strip()[:300] if body_el else ""
 
-            # Timestamp — sits as a sibling element ABOVE the card
-            timestamp = await entry.evaluate("""el => {
-                let prev = el.previousElementSibling;
-                while (prev) {
-                    let t = prev.querySelector('time');
-                    if (t) return t.getAttribute('datetime') || t.textContent.trim();
-                    let txt = prev.textContent.trim();
-                    if (txt.match(/\\d+[mh] ago|GMT/i)) return txt;
-                    prev = prev.previousElementSibling;
-                }
-                return '';
-            }""")
+            time_el = await entry.query_selector(".card-live__precontent time, time")
+            timestamp = ""
+            if time_el:
+                timestamp = await time_el.get_attribute("datetime") or await time_el.inner_text()
+                timestamp = timestamp.strip()
 
             if not heading and not body:
                 continue
 
-            results.append({"timestamp": timestamp.strip(), "heading": heading, "body": body})
-            print(f"  [{timestamp.strip()}] {heading[:70]}")
+            results.append({"timestamp": timestamp, "heading": heading, "body": body})
+            print(f"  [{timestamp}] {heading[:70]}")
 
         await browser.close()
         return url, results
