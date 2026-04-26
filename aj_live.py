@@ -133,90 +133,48 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         title = await page.title()
         print(f"Page title: {title}")
 
-        # From screenshot: entries are boxed cards inside the liveblog
-        # Timestamp is a sibling above each card, heading is an h2 inside the card
-        selectors = [
-            "[data-type='liveblog-entry']",
-            ".liveblog-entry",
-            ".wysiwyg-block--liveblog",
-            "article.article--liveblog",
-            "[class*='liveblog']",
-            "[class*='live-blog']",
-            "[class*='LiveBlog']",
-            # broad fallback — any article-like card in the main content area
-            "main article",
-            "article",
-        ]
-        entries = []
-        for sel in selectors:
-            entries = await page.query_selector_all(sel)
-            if entries:
-                print(f"Selector matched: {sel} ({len(entries)} entries)")
-                # Print raw HTML of first 2 entries so we can see the real structure
-                for i, e in enumerate(entries[:2]):
-                    inner = await e.inner_html()
-                    print(f"--- Entry {i+1} HTML ---\n{inner[:800]}\n")
-                break
+        # [class*='liveblog'] matches 26 elements — both timestamp rows AND cards.
+        # Filter to only elements that contain an h2/h3 (the actual story cards).
+        # Timestamp lives as a sibling ABOVE each card, not inside it.
+        all_liveblog = await page.query_selector_all("[class*='liveblog']")
+        entries = [el for el in all_liveblog if await el.query_selector("h2, h3")]
+        print(f"Liveblog cards with headings: {len(entries)}")
 
         if not entries:
             html = await page.content()
-            # Search for "liveblog" or "live-blog" in the HTML and print surrounding context
             lower = html.lower()
-            for keyword in ["liveblog", "live-blog", "liveentry", "live_entry"]:
-                idx = lower.find(keyword)
-                if idx != -1:
-                    start = max(0, idx - 200)
-                    end = min(len(html), idx + 500)
-                    print(f"Found '{keyword}' at pos {idx}. Context:\n{html[start:end]}")
-                    break
-            else:
-                # Keyword not found — print body section (skip head)
-                body_idx = lower.find("<body")
-                if body_idx != -1:
-                    print(f"Body HTML (first 2000 chars):\n{html[body_idx:body_idx+2000]}")
-                else:
-                    print(f"Full HTML (chars 3000-6000):\n{html[3000:6000]}")
+            idx = lower.find("liveblog")
+            if idx != -1:
+                print(f"HTML around 'liveblog':\n{html[max(0,idx-100):idx+600]}")
 
         results = []
         for entry in entries[:n]:
-            # Timestamp: visible as "11m ago (20:30 GMT)" — try time element
-            # and also the preceding sibling which holds the relative time
-            time_el = await entry.query_selector("time")
-            timestamp = ""
-            if time_el:
-                timestamp = await time_el.get_attribute("datetime") or await time_el.inner_text()
-                timestamp = timestamp.strip()
-
-            # If no time inside card, check the element just before it
-            if not timestamp:
-                try:
-                    timestamp = await entry.evaluate("""el => {
-                        let prev = el.previousElementSibling;
-                        while (prev) {
-                            let t = prev.querySelector('time');
-                            if (t) return t.textContent;
-                            if (prev.textContent.match(/\\d+m ago|\\d+h ago|GMT/)) return prev.textContent.trim();
-                            prev = prev.previousElementSibling;
-                        }
-                        return '';
-                    }""")
-                except Exception:
-                    pass
-
-            # Heading: h2 inside the card (visible in screenshot)
-            heading_el = await entry.query_selector("h2, h3, h4")
+            # Heading — h2 inside the card
+            heading_el = await entry.query_selector("h2, h3")
             heading = (await heading_el.inner_text()).strip() if heading_el else ""
 
-            # Body: first p tag inside the card
+            # Body — first <p> inside the card
             body_el = await entry.query_selector("p")
             body = (await body_el.inner_text()).strip()[:300] if body_el else ""
 
-            # Skip entries with no useful content
+            # Timestamp — sits as a sibling element ABOVE the card
+            timestamp = await entry.evaluate("""el => {
+                let prev = el.previousElementSibling;
+                while (prev) {
+                    let t = prev.querySelector('time');
+                    if (t) return t.getAttribute('datetime') || t.textContent.trim();
+                    let txt = prev.textContent.trim();
+                    if (txt.match(/\\d+[mh] ago|GMT/i)) return txt;
+                    prev = prev.previousElementSibling;
+                }
+                return '';
+            }""")
+
             if not heading and not body:
                 continue
 
-            results.append({"timestamp": timestamp, "heading": heading, "body": body})
-            print(f"  [{timestamp}] {heading[:60]}")
+            results.append({"timestamp": timestamp.strip(), "heading": heading, "body": body})
+            print(f"  [{timestamp.strip()}] {heading[:70]}")
 
         await browser.close()
         return url, results
