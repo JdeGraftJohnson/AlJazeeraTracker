@@ -1,8 +1,5 @@
 """
 aj_live.py — Al Jazeera live blog monitor for GitHub Actions.
-
-Uses playwright-stealth to bypass Cloudflare's datacenter IP blocking,
-which prevents headless browsers on GitHub Actions from loading AJ pages.
 """
 
 import asyncio
@@ -14,7 +11,6 @@ from pathlib import Path
 import requests
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
-await Stealth().apply_stealth_async(page)
 
 LIVEBLOG_INDEX = "https://www.aljazeera.com/news/liveblog/"
 LAST_SEEN_FILE = Path("last_seen.txt")
@@ -103,8 +99,8 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         )
         page = await context.new_page()
 
-        # Apply stealth patches — makes headless Chromium look like a real browser
-        await stealth_async(page)
+        # Apply stealth — makes headless Chromium look like a real browser
+        await Stealth().apply_stealth_async(page)
 
         if not url:
             url = await get_todays_liveblog_url(page)
@@ -113,7 +109,6 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         await page.wait_for_timeout(3_000)
 
-        # Debug: print page title so we can confirm the page loaded vs a block page
         title = await page.title()
         print(f"Page title: {title}")
 
@@ -131,9 +126,8 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
                 break
 
         if not entries:
-            # Dump a snippet of HTML to help debug selector mismatches
             html = await page.content()
-            print(f"No entries found. Page HTML snippet:\n{html[:1000]}")
+            print(f"No entries found. Page HTML snippet:\n{html[:1500]}")
 
         results = []
         for entry in entries[:n]:
