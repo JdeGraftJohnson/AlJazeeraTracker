@@ -114,6 +114,10 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         await page.evaluate("window.scrollBy(0, 800)")
         await page.wait_for_timeout(2_000)
 
+        # Save screenshot as debug artifact
+        await page.screenshot(path="debug_screenshot.png", full_page=False)
+        print("Screenshot saved: debug_screenshot.png")
+
         title = await page.title()
         print(f"Page title: {title}")
 
@@ -122,7 +126,6 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
             ".liveblog-entry",
             ".wysiwyg-block--liveblog",
             "article.article--liveblog",
-            # broader fallbacks
             "[class*='liveblog']",
             "[class*='live-blog']",
             "[class*='LiveBlog']",
@@ -136,8 +139,22 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
 
         if not entries:
             html = await page.content()
-            # Print more HTML so we can find the right selector
-            print(f"No entries found. Page HTML snippet:\n{html[:3000]}")
+            # Search for "liveblog" or "live-blog" in the HTML and print surrounding context
+            lower = html.lower()
+            for keyword in ["liveblog", "live-blog", "liveentry", "live_entry"]:
+                idx = lower.find(keyword)
+                if idx != -1:
+                    start = max(0, idx - 200)
+                    end = min(len(html), idx + 500)
+                    print(f"Found '{keyword}' at pos {idx}. Context:\n{html[start:end]}")
+                    break
+            else:
+                # Keyword not found — print body section (skip head)
+                body_idx = lower.find("<body")
+                if body_idx != -1:
+                    print(f"Body HTML (first 2000 chars):\n{html[body_idx:body_idx+2000]}")
+                else:
+                    print(f"Full HTML (chars 3000-6000):\n{html[3000:6000]}")
 
         results = []
         for entry in entries[:n]:
