@@ -2,15 +2,18 @@ name: AJ Live Tracker
 
 on:
   schedule:
-    - cron: '*/1 * * * *'   # every 30 minutes
-  workflow_dispatch:           # allow manual trigger from GitHub UI
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     permissions:
-      contents: write          # needed to commit last_seen.txt back to repo
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -43,5 +46,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last_seen.txt
-          git diff --staged --quiet || git commit -m "chore: update last_seen [skip ci]"
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: update last_seen [skip ci]"
+          git pull --rebase origin main
           git push
