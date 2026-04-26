@@ -106,8 +106,13 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
             url = await get_todays_liveblog_url(page)
             print(f"Today's liveblog: {url}")
 
-        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        # networkidle waits for JS to finish rendering (vs domcontentloaded which is too early)
+        await page.goto(url, wait_until="networkidle", timeout=45_000)
         await page.wait_for_timeout(3_000)
+
+        # Scroll down to trigger any lazy-loaded content
+        await page.evaluate("window.scrollBy(0, 800)")
+        await page.wait_for_timeout(2_000)
 
         title = await page.title()
         print(f"Page title: {title}")
@@ -117,6 +122,10 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
             ".liveblog-entry",
             ".wysiwyg-block--liveblog",
             "article.article--liveblog",
+            # broader fallbacks
+            "[class*='liveblog']",
+            "[class*='live-blog']",
+            "[class*='LiveBlog']",
         ]
         entries = []
         for sel in selectors:
@@ -127,7 +136,8 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
 
         if not entries:
             html = await page.content()
-            print(f"No entries found. Page HTML snippet:\n{html[:1500]}")
+            # Print more HTML so we can find the right selector
+            print(f"No entries found. Page HTML snippet:\n{html[:3000]}")
 
         results = []
         for entry in entries[:n]:
