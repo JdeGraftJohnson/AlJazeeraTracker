@@ -1,14 +1,11 @@
 """
 aj_live.py — Al Jazeera live blog monitor for GitHub Actions.
 
-- Auto-discovers today's liveblog URL from the index page
-- Compares top headline against last_seen.txt to detect new updates
-- Sends new updates to Discord via webhook
-- Writes last_seen.txt so the next run knows what was already sent
+Uses playwright-stealth to bypass Cloudflare's datacenter IP blocking,
+which prevents headless browsers on GitHub Actions from loading AJ pages.
 """
 
 import asyncio
-import json
 import os
 import sys
 from datetime import datetime
@@ -16,6 +13,7 @@ from pathlib import Path
 
 import requests
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 LIVEBLOG_INDEX = "https://www.aljazeera.com/news/liveblog/"
 LAST_SEEN_FILE = Path("last_seen.txt")
@@ -29,21 +27,18 @@ UA = (
 # ── Persistence ────────────────────────────────────────────────────────────
 
 def load_last_seen() -> set[str]:
-    """Load previously sent headlines from file."""
     if not LAST_SEEN_FILE.exists():
         return set()
     return set(LAST_SEEN_FILE.read_text().strip().splitlines())
 
 
 def save_last_seen(headlines: list[str]) -> None:
-    """Persist current headlines so next run can diff against them."""
     LAST_SEEN_FILE.write_text("\n".join(headlines))
 
 
 # ── Discord ────────────────────────────────────────────────────────────────
 
 def send_discord(updates: list[dict], liveblog_url: str) -> None:
-    """Send new updates to Discord as a single embed."""
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
         print("No DISCORD_WEBHOOK_URL set — skipping alert.")
@@ -75,7 +70,7 @@ def send_discord(updates: list[dict], liveblog_url: str) -> None:
 
 async def get_todays_liveblog_url(page) -> str:
     await page.goto(LIVEBLOG_INDEX, wait_until="domcontentloaded", timeout=30_000)
-    await page.wait_for_timeout(1_500)
+    await page.wait_for_timeout(2_000)
     link = await page.query_selector("a[href*='/news/liveblog/20']")
     if not link:
         raise RuntimeError("Could not find today's liveblog on the index page.")
@@ -87,15 +82,39 @@ async def get_todays_liveblog_url(page) -> str:
 
 async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]]:
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        page = await browser.new_page(user_agent=UA)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+            ],
+        )
+        context = await browser.new_context(
+            user_agent=UA,
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+            timezone_id="America/New_York",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            },
+        )
+        page = await context.new_page()
+
+        # Apply stealth patches — makes headless Chromium look like a real browser
+        await stealth_async(page)
 
         if not url:
             url = await get_todays_liveblog_url(page)
             print(f"Today's liveblog: {url}")
 
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        await page.wait_for_timeout(2_000)
+        await page.wait_for_timeout(3_000)
+
+        # Debug: print page title so we can confirm the page loaded vs a block page
+        title = await page.title()
+        print(f"Page title: {title}")
 
         selectors = [
             "[data-type='liveblog-entry']",
@@ -107,7 +126,13 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
         for sel in selectors:
             entries = await page.query_selector_all(sel)
             if entries:
+                print(f"Selector matched: {sel} ({len(entries)} entries)")
                 break
+
+        if not entries:
+            # Dump a snippet of HTML to help debug selector mismatches
+            html = await page.content()
+            print(f"No entries found. Page HTML snippet:\n{html[:1000]}")
 
         results = []
         for entry in entries[:n]:
@@ -139,7 +164,6 @@ async def main():
         print("No updates found.")
         return
 
-    # Diff against last seen
     last_seen = load_last_seen()
     new_updates = [u for u in updates if u["heading"] not in last_seen]
 
@@ -149,7 +173,6 @@ async def main():
         print(f"{len(new_updates)} new update(s) found.")
         send_discord(new_updates, liveblog_url)
 
-    # Always persist the current top 3 headings
     save_last_seen([u["heading"] for u in updates if u["heading"]])
 
 
