@@ -3,8 +3,10 @@ backfill_from_discord.py — one-shot backfill of headline history from the
 Discord channel where aj_live.py has been posting embeds.
 
 Env:
-  DISCORD_BOT_TOKEN   bot token with View Channel + Read Message History
-  DISCORD_CHANNEL_ID  numeric channel ID (Developer Mode → Copy ID)
+  DISCORD_BOT_TOKEN    bot token with View Channel + Read Message History
+                       (must be added to the same server + channel as the webhook)
+  DISCORD_WEBHOOK_URL  existing webhook URL — channel_id auto-derived from it
+  DISCORD_CHANNEL_ID   (optional) override; skips webhook lookup
 
 Idempotent: uses the same sha1(published_utc|heading) id as aj_live.py's
 append_history(), so re-runs won't duplicate. Writes to data/headlines_YYYY-MM.jsonl.
@@ -23,6 +25,13 @@ from aj_live import HISTORY_DIR, _headline_id, _iso_to_est
 API = "https://discord.com/api/v10"
 FIELD_NAME_RE = re.compile(r"^🕐\s*(?P<ts>.+?)\s*—\s*(?P<heading>.+)$")
 ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+
+
+def channel_id_from_webhook(webhook_url: str) -> str:
+    """GET the webhook object (webhook_url IS its own auth) → returns channel_id."""
+    r = requests.get(webhook_url, timeout=10)
+    r.raise_for_status()
+    return r.json()["channel_id"]
 
 
 def fetch_messages(token: str, channel_id: str):
@@ -79,8 +88,16 @@ def parse_embed(msg: dict):
 def main():
     token = os.environ.get("DISCORD_BOT_TOKEN")
     channel = os.environ.get("DISCORD_CHANNEL_ID")
-    if not token or not channel:
-        print("Set DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID."); sys.exit(1)
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+
+    if not token:
+        print("Set DISCORD_BOT_TOKEN (bot with View Channel + Read Message History)."); sys.exit(1)
+
+    if not channel:
+        if not webhook_url:
+            print("Set DISCORD_CHANNEL_ID or DISCORD_WEBHOOK_URL."); sys.exit(1)
+        channel = channel_id_from_webhook(webhook_url)
+        print(f"Resolved channel_id={channel} from webhook.")
 
     HISTORY_DIR.mkdir(exist_ok=True)
 
