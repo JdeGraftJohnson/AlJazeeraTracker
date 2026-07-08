@@ -3,10 +3,13 @@ aj_live.py — Al Jazeera live blog monitor for GitHub Actions.
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from playwright.async_api import async_playwright
@@ -14,6 +17,60 @@ from playwright_stealth import Stealth
 
 LIVEBLOG_INDEX = "https://www.aljazeera.com/news/liveblog/"
 LAST_SEEN_FILE = Path("last_seen.txt")
+HISTORY_DIR = Path("data")
+EST = ZoneInfo("America/New_York")
+
+
+def _headline_id(published_utc: str, heading: str) -> str:
+    return hashlib.sha1(f"{published_utc}|{heading}".encode("utf-8")).hexdigest()[:16]
+
+
+def _iso_to_est(iso_dt: str) -> str:
+    if not iso_dt:
+        return ""
+    dt = datetime.fromisoformat(iso_dt.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(EST).isoformat()
+
+
+def append_history(updates: list[dict], liveblog_url: str) -> int:
+    HISTORY_DIR.mkdir(exist_ok=True)
+    now_utc = datetime.now(timezone.utc)
+    partition = HISTORY_DIR / f"headlines_{now_utc.strftime('%Y-%m')}.jsonl"
+
+    existing_ids: set[str] = set()
+    if partition.exists():
+        for line in partition.read_text().splitlines():
+            try:
+                existing_ids.add(json.loads(line)["id"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+    written = 0
+    with partition.open("a", encoding="utf-8") as f:
+        for u in updates:
+            heading = u.get("heading") or ""
+            published_utc = u.get("iso_dt") or ""
+            if not heading:
+                continue
+            hid = _headline_id(published_utc, heading)
+            if hid in existing_ids:
+                continue
+            record = {
+                "id": hid,
+                "seen_at_utc": now_utc.isoformat(),
+                "published_utc": published_utc,
+                "published_est": _iso_to_est(published_utc),
+                "timestamp_display": u.get("timestamp") or "",
+                "heading": heading,
+                "body": u.get("body") or "",
+                "liveblog_url": liveblog_url,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            existing_ids.add(hid)
+            written += 1
+    return written
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -166,7 +223,6 @@ async def get_live_updates(url: str = None, n: int = 3) -> tuple[str, list[dict]
 
         results = []
         for r in all_results[:n]:
-            del r["iso_dt"]
             results.append(r)
             print(f"  [{r['timestamp']}] {r['heading'][:70]}")
 
@@ -183,6 +239,9 @@ async def main():
     if not updates:
         print("No updates found.")
         return
+
+    archived = append_history(updates, liveblog_url)
+    print(f"Archived {archived} new headline(s) to data/.")
 
     last_seen = load_last_seen()
     new_updates = [u for u in updates if u["heading"] not in last_seen]
